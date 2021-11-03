@@ -1,3 +1,9 @@
 
 mnist_data/
 .ipynb_checkpoints/
+
+XAE/data/
+XAE/log/
+XAE/result/tb_logs/
+
+*.pyc
