@@ -7,3 +7,5 @@ XAE/log/
 XAE/result/tb_logs/
 
 *.pyc
+
+*.pt
