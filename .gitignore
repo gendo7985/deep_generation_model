@@ -9,3 +9,5 @@ XAE/result/tb_logs/
 *.pyc
 
 *.pt
+
+XAE/result/

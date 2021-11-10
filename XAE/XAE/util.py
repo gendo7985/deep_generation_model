@@ -29,6 +29,14 @@ def reparameterize(mu, logvar):
         eps = torch.randn_like(std)
         return mu + eps*std
 
+class prob_enc(nn.Module):
+    def __init__(self, n, m):
+        super(prob_enc, self).__init__()
+        self.mu = nn.Linear(n, m)
+        self.logvar = nn.Linear(n, m)
+    def forward(self, x):
+        return reparameterize(self.mu(x), self.logvar(x))
+
 def get_lr(optimizer):
     for param_group in optimizer.param_groups:
         return param_group['lr']

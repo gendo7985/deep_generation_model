@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore")
 import os, sys, configparser, logging, argparse
 sys.path.append('/'.join(os.getcwd().split('/')[:-2]))
 import torch
@@ -10,10 +12,10 @@ from XAE.util import init_params
 class WAE_MMD_MNIST(WAE_MMD_abstract):
     def __init__(self, cfg, log, device = 'cpu', verbose = 1):
         super(WAE_MMD_MNIST, self).__init__(cfg, log, device, verbose)
-        self.d = 64
+        self.d = 32
         d = self.d
-        
-        self.enc = self.d_sample = nn.Sequential(
+
+        self.enc = nn.Sequential(
             nn.Conv2d(1, d, kernel_size = 4, stride = 2, padding = 1, bias = False),
             nn.BatchNorm2d(d),
             nn.ReLU(True),
@@ -31,23 +33,27 @@ class WAE_MMD_MNIST(WAE_MMD_abstract):
             nn.ReLU(True),
             
             nn.Flatten(),
-            nn.Linear(8*d, self.z_dim),
+            nn.Linear(8*d, d),
+            nn.BatchNorm1d(d),
+            nn.ReLU(True),
+
+            nn.Linear(d, self.z_dim)
             ).to(device)
         
         self.dec = nn.Sequential(
-            nn.Linear(8, 49*8*d),
+            nn.Linear(self.z_dim, 49*8*d),
             nn.Unflatten(1, (8*d, 7, 7)),
             
-            nn.ConvTranspose2d(8*d, 4*d, kernel_size = 4, stride = 2, padding = 1, bias = False),
+            nn.ConvTranspose2d(8*d, 4*d, kernel_size = 4, bias = False),
             nn.BatchNorm2d(4*d),
             nn.ReLU(True),
             
-            nn.ConvTranspose2d(4*d, 2*d, kernel_size = 4, stride = 2, padding = 1, bias = False),
+            nn.ConvTranspose2d(4*d, 2*d, kernel_size = 4, bias = False),
             nn.BatchNorm2d(2*d),
             nn.ReLU(True),
             
             # reconstruction
-            nn.Conv2d(2*d, 1, kernel_size = 3, padding = 1),
+            nn.ConvTranspose2d(2*d, 1, kernel_size = 4, stride = 2),
             nn.Tanh(),
             
             ).to(device)

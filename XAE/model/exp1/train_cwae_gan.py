@@ -5,18 +5,22 @@ sys.path.append('/'.join(os.getcwd().split('/')[:-2]))
 import torch
 import torch.nn as nn
 
-from XAE.model import WAE_GAN_abstract
+from XAE.model import CWAE_GAN_abstract
 from XAE.logging_daily import logging_daily
 from XAE.util import init_params
 
-class WAE_GAN_MNIST(WAE_GAN_abstract):
+class CWAE_GAN_MNIST(CWAE_GAN_abstract):
     def __init__(self, cfg, log, device = 'cpu', verbose = 1):
-        super(WAE_GAN_MNIST, self).__init__(cfg, log, device, verbose)
+        super(CWAE_GAN_MNIST, self).__init__(cfg, log, device, verbose)
         self.d = 64
         d = self.d
-        
-        self.enc = nn.Sequential(
+
+        self.embed_data = nn.Sequential(
             nn.Conv2d(1, d, kernel_size = 4, stride = 2, padding = 1, bias = False),
+            nn.BatchNorm2d(d),
+            nn.ReLU(True),
+
+            nn.Conv2d(d, d, kernel_size = 4, padding = 'same', bias = False),
             nn.BatchNorm2d(d),
             nn.ReLU(True),
 
@@ -24,57 +28,73 @@ class WAE_GAN_MNIST(WAE_GAN_abstract):
             nn.BatchNorm2d(2*d),
             nn.ReLU(True),
 
-            nn.Conv2d(2*d, 4*d, kernel_size = 4, stride = 2, padding = 1, bias = False),
-            nn.BatchNorm2d(4*d),
+            nn.Conv2d(2*d, 2*d, kernel_size = 4, padding = 'same', bias = False),
+            nn.BatchNorm2d(2*d),
             nn.ReLU(True),
 
-            nn.Conv2d(4*d, 8*d, kernel_size = 4, stride = 2, padding = 1, bias = False),
-            nn.BatchNorm2d(8*d),
-            nn.ReLU(True),
-            
             nn.Flatten(),
-            nn.Linear(8*d, self.z_dim),
+        ).to(device)
+        # self.embed_condition = nn.Sequential(
+        #     nn.Linear(10, 7*7),
+        #     # nn.Unflatten(1, (1,7*7)),
+        # ).to(device)
+        
+        self.enc = nn.Sequential(
+            nn.Linear(49*2*d+self.y_dim, d),
+            nn.BatchNorm1d(d),
+            nn.ReLU(True),
+
+            nn.Linear(d, self.z_dim)
             ).to(device)
         
         self.dec = nn.Sequential(
-            nn.Linear(8, 49*8*d),
-            nn.Unflatten(1, (8*d, 7, 7)),
+            nn.Linear(self.z_dim + self.y_dim, 49*2*d),
+            nn.Unflatten(1, (2*d, 7, 7)),
             
-            nn.ConvTranspose2d(8*d, 4*d, kernel_size = 4, bias = False),
-            nn.BatchNorm2d(4*d),
+            nn.ConvTranspose2d(2*d, d, kernel_size = 4, stride = 2, padding = 1, bias = False),
+            nn.BatchNorm2d(d),
             nn.ReLU(True),
             
-            nn.ConvTranspose2d(4*d, 2*d, kernel_size = 4, bias = False),
-            nn.BatchNorm2d(2*d),
+            nn.ConvTranspose2d(d, d//2, kernel_size = 4, stride = 2, padding = 1, bias = False),
+            nn.BatchNorm2d(d//2),
+            nn.ReLU(True),
+
+            nn.Conv2d(d//2, d//4, kernel_size = 4, padding = 'same', bias = False),
+            nn.BatchNorm2d(d//4),
             nn.ReLU(True),
             
             # reconstruction
-            nn.ConvTranspose2d(2*d, 1, kernel_size = 4, stride = 2),
+            nn.Conv2d(d//4, 1, kernel_size = 4, padding = 'same'),
             nn.Tanh(),
             
             ).to(device)
 
         self.disc = nn.Sequential(
-            nn.Linear(self.z_dim, 4*d),
-            nn.BatchNorm1d(4*d),
+            nn.Linear(self.z_dim + self.y_dim, d),
             nn.ReLU(True),
 
-            nn.Linear(4*d, 4*d),
-            nn.BatchNorm1d(4*d),
+            nn.Linear(d, d),
             nn.ReLU(True),
 
-            nn.Linear(4*d, 4*d),
-            nn.BatchNorm1d(4*d),
+            nn.Linear(d, d),
             nn.ReLU(True),
 
-            nn.Linear(4*d, 1),
+            nn.Linear(d, d),
+            nn.ReLU(True),
+
+            nn.Linear(d, d),
+            nn.ReLU(True),
+
+            nn.Linear(d, 1),
             ).to(device)
         
+        init_params(self.embed_data)
+        init_params(self.embed_condition)
         init_params(self.enc)
         init_params(self.dec)
         init_params(self.disc)
 
-        self.encoder_trainable = [self.enc]
+        self.encoder_trainable = [self.enc, self.embed_data]
         self.decoder_trainable = [self.dec]
         self.discriminator_trainable = [self.disc]
 
