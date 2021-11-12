@@ -3,13 +3,13 @@ sys.path.append('/'.join(os.getcwd().split('/')[:-2]))
 import torch
 import torch.nn as nn
 
-from XAE.model import CWAE_MMD_abstract
+from XAE.model import CVAE_abstract
 from XAE.logging_daily import logging_daily
 from XAE.util import init_params
 
-class CWAE_MMD_MNIST(CWAE_MMD_abstract):
+class CVAE_MNIST(CVAE_abstract):
     def __init__(self, cfg, log, device = 'cpu', verbose = 1):
-        super(CWAE_MMD_MNIST, self).__init__(cfg, log, device, verbose)
+        super(CVAE_MNIST, self).__init__(cfg, log, device, verbose)
         self.d = 64
         d = self.d
         
@@ -42,8 +42,10 @@ class CWAE_MMD_MNIST(CWAE_MMD_abstract):
             nn.BatchNorm1d(d),
             nn.ReLU(True),
 
-            nn.Linear(d, self.z_dim)
             ).to(device)
+        
+        self.mu = nn.Linear(d, self.z_dim).to(device)
+        self.logvar = nn.Linear(d, self.z_dim).to(device)
         
         self.dec = nn.Sequential(
             nn.Linear(self.z_dim + self.y_dim, 49*2*d),
@@ -63,11 +65,10 @@ class CWAE_MMD_MNIST(CWAE_MMD_abstract):
             
             # reconstruction
             nn.Conv2d(d//4, 1, kernel_size = 4, padding = 'same'),
-            nn.Tanh(),
             
             ).to(device)
         
-        self.encoder_trainable = [self.enc, self.embed_data]
+        self.encoder_trainable = [self.enc, self.embed_data, self.mu, self.logvar]
         self.decoder_trainable = [self.dec]
 
         for net in self.encoder_trainable:

@@ -3,17 +3,17 @@ sys.path.append('/'.join(os.getcwd().split('/')[:-2]))
 import torch
 import torch.nn as nn
 
-from XAE.model import CWAE_MMD_abstract
+from XAE.model import VAE_abstract
 from XAE.logging_daily import logging_daily
 from XAE.util import init_params
 
-class CWAE_MMD_MNIST(CWAE_MMD_abstract):
+class VAE_MNIST(VAE_abstract):
     def __init__(self, cfg, log, device = 'cpu', verbose = 1):
-        super(CWAE_MMD_MNIST, self).__init__(cfg, log, device, verbose)
+        super(VAE_MNIST, self).__init__(cfg, log, device, verbose)
         self.d = 64
         d = self.d
         
-        self.embed_data = nn.Sequential(
+        self.enc = nn.Sequential(
             nn.Conv2d(1, d, kernel_size = 4, stride = 2, padding = 1, bias = False),
             nn.BatchNorm2d(d),
             nn.ReLU(True),
@@ -29,24 +29,19 @@ class CWAE_MMD_MNIST(CWAE_MMD_abstract):
             nn.Conv2d(2*d, 2*d, kernel_size = 4, padding = 'same', bias = False),
             nn.BatchNorm2d(2*d),
             nn.ReLU(True),
-
+            
             nn.Flatten(),
-        ).to(device)
-        # self.embed_condition = nn.Sequential(
-        #     nn.Linear(10, 7*7),
-        #     nn.Unflatten(1, (1,7*7)),
-        # ).to(device)
-        
-        self.enc = nn.Sequential(
-            nn.Linear(49*2*d+self.y_dim, d),
+            
+            nn.Linear(49*2*d, d),
             nn.BatchNorm1d(d),
             nn.ReLU(True),
-
-            nn.Linear(d, self.z_dim)
             ).to(device)
+
+        self.mu = nn.Linear(d, self.z_dim).to(device)
+        self.logvar = nn.Linear(d, self.z_dim).to(device)
         
         self.dec = nn.Sequential(
-            nn.Linear(self.z_dim + self.y_dim, 49*2*d),
+            nn.Linear(self.z_dim, 49*2*d),
             nn.Unflatten(1, (2*d, 7, 7)),
             
             nn.ConvTranspose2d(2*d, d, kernel_size = 4, stride = 2, padding = 1, bias = False),
@@ -63,18 +58,17 @@ class CWAE_MMD_MNIST(CWAE_MMD_abstract):
             
             # reconstruction
             nn.Conv2d(d//4, 1, kernel_size = 4, padding = 'same'),
-            nn.Tanh(),
             
             ).to(device)
         
-        self.encoder_trainable = [self.enc, self.embed_data]
+        init_params(self.enc)
+        init_params(self.mu)
+        init_params(self.logvar)
+        init_params(self.dec)
+
+        self.encoder_trainable = [self.enc, self.mu, self.logvar]
         self.decoder_trainable = [self.dec]
-
-        for net in self.encoder_trainable:
-            init_params(net)
-        for net in self.decoder_trainable:
-            init_params(net)
-
+	
 if __name__ == '__main__':
     is_cuda = torch.cuda.is_available()
     device = torch.device('cuda' if is_cuda else 'cpu')
