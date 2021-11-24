@@ -1,4 +1,5 @@
 import torch
+import torch.distributions as D
 import math
 
 def unif(x, y, a = -1, b = 1, device = 'cpu'):
@@ -12,7 +13,7 @@ def h_sphere(x, y, device = 'cpu'):
     return (xyz/xyz.norm(dim = 1).unsqueeze(1)).to(device)
 
 def multinomial(x, y, device = 'cpu'):
-    return torch.eye(y)[torch.randint(y,(x,))].to(device)    
+    return torch.eye(y)[torch.randint(y,(x,))].to(device)
 
 def generate_yale_condition(x, y, device = 'cpu'): 
     # For azimuth and elevation in eYaleFace data

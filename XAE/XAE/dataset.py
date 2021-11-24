@@ -42,7 +42,6 @@ class CelebA(torch.utils.data.Dataset):
         
 class MNIST(torch.utils.data.Dataset):
     def __init__(self, data_home, train = True, label = False, output_channels = 1):
-        self.data = None
         self.label = label
         self.output_channels = output_channels
         if train:
@@ -50,10 +49,7 @@ class MNIST(torch.utils.data.Dataset):
         else:
             self.data = np.loadtxt('%s/mnist_test.csv' % data_home, delimiter=',', skiprows = 1)
 
-        self.code = np.zeros((10,10))
-        for i in range(10):
-            self.code[i,i] = 1.0
-        self.code = torch.from_numpy(self.code).type(torch.float32)
+        self.code = torch.from_numpy(np.eye(10)).type(torch.float32)
         
     def __len__(self):
         return np.shape(self.data)[0]
@@ -69,31 +65,38 @@ class MNIST(torch.utils.data.Dataset):
                 return torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.) .reshape((1,28,28)).type(torch.float32).repeat((self.output_channels,1,1))
             else:
                 return torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.) .reshape((1,28,28)).type(torch.float32)
-    
-# class labeled_MNIST(torch.utils.data.Dataset):
-#     def __init__(self, data_home, train = True, output_channels = 1):
-#         self.data = None
-#         self.output_channels = output_channels
-#         if train:
-#             self.data = np.loadtxt('%s/mnist_train.csv' % data_home, delimiter=',', skiprows = 1)
-#         else:
-#             self.data = np.loadtxt('%s/mnist_test.csv' % data_home, delimiter=',', skiprows = 1)
 
-#         self.code = np.zeros((10,10))
-#         for i in range(10):
-#             self.code[i,i] = 1.0
-#         self.code = torch.from_numpy(self.code).type(torch.float32)
+class rmMNIST(MNIST):
+    def __init__(self, data_home, train = True, label = False, output_channels = 1, aux = None):
+        self.label = label
+        self.output_channels = output_channels
         
-#     def __len__(self):
-#         return np.shape(self.data)[0]
-    
-#     def __getitem__(self, idx):
-#         if self.output_channels > 1:
-#             return [torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.).reshape((1,28,28)).type(torch.float32).repeat((self.output_channels,1,1)), self.code[self.data[idx, 0].astype(np.int)]]
-#         return [torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.).reshape((1,28,28)).type(torch.float32), self.code[self.data[idx, 0].astype(np.int)]]
-    
-#     def coded_label(self, idx):
-#         return self.code[idx]
+        if train:
+            self.data = np.loadtxt('%s/mnist_train.csv' % data_home, delimiter=',', skiprows = 1)
+        else:
+            self.data = np.loadtxt('%s/mnist_test.csv' % data_home, delimiter=',', skiprows = 1)
+        
+        if aux is not None:
+            lab_ind = [[] for i in range(10)]
+            # classify all data by digit
+            for i in range(len(self.data)):
+                lab_ind[int(self.data[i,0])].append(i)
+            # count all counts for each digit
+            all_ind = []
+            recode = 0
+            for i in aux[0]:
+                using_digit_ind = lab_ind[i]
+                self.data[using_digit_ind, 0] = recode
+                all_ind += using_digit_ind
+                recode += 1
+            for i in aux[1]:
+                using_digit_ind = lab_ind[i]
+                self.data[using_digit_ind, 0] = recode
+                all_ind += using_digit_ind
+            self.data = self.data[all_ind]
+            self.code = torch.from_numpy(np.eye(recode+1)).type(torch.float32)
+        else:
+            self.code = torch.from_numpy(np.eye(10)).type(torch.float32)
 
 class eYaleB(torch.utils.data.Dataset):
     def __init__(self, data_home, train = True, label = True, output_channels = 1):
@@ -107,15 +110,8 @@ class eYaleB(torch.utils.data.Dataset):
             with open('%s/YaleBFaceTest.dat' % data_home, 'rb') as f:
                 self.data = pickle.load(f)
 
-        self.code = np.zeros((28,28))
-        for i in range(28):
-            self.code[i,i] = 1.0
-        self.code = torch.from_numpy(self.code).type(torch.float32)
-        
-        self.code2 = np.zeros((10, 10))
-        for i in range(10):
-            self.code2[i,i] = 1.0
-        self.code2 = torch.from_numpy(self.code2).type(torch.float32)
+        self.code = torch.from_numpy(np.eye(28)).type(torch.float32)
+        self.code2 = torch.from_numpy(np.eye(10)).type(torch.float32)
         
     def __len__(self):
         return (self.data['image'].shape)[0]
