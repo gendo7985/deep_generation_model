@@ -4,7 +4,7 @@ import torch.distributions as dist
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import numpy as np
-import math
+import os
 
 from .sampler import multinomial, gaus
 
@@ -25,9 +25,6 @@ def init_params(model):
         else:
             nn.init.uniform_(p, 0.1, 0.2)
 
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-    
 def reparameterize(mu, logvar):
         # reparameterization trick for probablistic encoder
         std = torch.exp(0.5*logvar)
@@ -106,6 +103,8 @@ def get_lr(optimizer):
         return param_group['lr']
 
 def save_sample_images(save_path, epoch, img_list):
+    if not os.path.isdir(save_path):
+        os.makedirs(save_path)
     fig = plt.figure(figsize=(4,4))
     for i in range(64):
         plt.subplot(8,8,i+1)
@@ -117,7 +116,7 @@ def save_sample_images(save_path, epoch, img_list):
     
     fig.tight_layout(pad = 0)
     fig.subplots_adjust(wspace=0.0, hspace = 0.0)
-    plt.savefig('%s-%03d.png' % (save_path, epoch))
+    plt.savefig('%s-%03d.png' % (save_path, epoch + 1))
     
 class lap_filter(nn.Module):
     def __init__(self, input_channel = 1, device = 'cpu'):

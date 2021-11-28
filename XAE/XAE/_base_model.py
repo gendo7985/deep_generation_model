@@ -151,7 +151,6 @@ class XAE_abstract(nn.Module):
                 loss.backward()
                 optimizer.step()
                 
-                # train_loss_main.append(loss.item(), len(data))
                 if loss.item() > 0.1 or cur_step < 10:
                     print('train_main: %.4f at %i step' % (loss.item(), cur_step), end = "\r")
                 else:
@@ -163,10 +162,10 @@ class XAE_abstract(nn.Module):
                 break
 
     def train(self, resume = False):
-        self.train_main_list = []
-        self.train_penalty_list = []
-        self.test_main_list = []
-        self.test_penalty_list = []
+        train_main_list = []
+        train_penalty_list = []
+        test_main_list = []
+        test_penalty_list = []
 
         for net in self.encoder_trainable:
             net.train()
@@ -193,6 +192,12 @@ class XAE_abstract(nn.Module):
             if len(self.lr_schedule) > 0:
                 scheduler.load_state_dict(checkpoint['scheduler'])
 
+        trep = len(self.train_generator)
+        ftrep = len(str(trep))
+        ttep = len(self.test_generator)
+        fttep = len(str(ttep))
+        fep = len(str(self.num_epoch))
+        
         self.log.info('------------------------------------------------------------')
         self.log.info('Training Start!')
         start_time = time.time()
@@ -218,7 +223,7 @@ class XAE_abstract(nn.Module):
                 loss = self.main_loss(x, recon)
                 if self.lamb > 0:
                     penalty = self.penalty_loss(fake_latent, prior_z, n)
-                    obj = loss + self.lamb * penalty
+                    obj = loss + self.lamb*penalty
                 else:
                     obj = loss
                 obj.backward()
@@ -228,11 +233,10 @@ class XAE_abstract(nn.Module):
                 if self.lamb > 0:
                     train_loss_penalty.append(penalty.item(), n)
                 
-                print('[%i/%i]\ttrain_main: %.4f\ttrain_penalty: %.4f' % (i+1, len(self.train_generator), train_loss_main.avg, train_loss_penalty.avg), 
-                      end = "\r")
+                print(f'[{i+1:0{ftrep}}/{trep}] train_main: {train_loss_main.avg:.4f} train_penalty: {train_loss_penalty.avg:.4f}', end = "\r")
 
-            self.train_main_list.append(train_loss_main.avg)
-            self.train_penalty_list.append(train_loss_penalty.avg)
+            train_main_list.append(train_loss_main.avg)
+            train_penalty_list.append(train_loss_penalty.avg)
 
             if len(self.tensorboard_dir) > 0:
                 self.writer.add_scalar('train/main', train_loss_main.avg, epoch)
@@ -258,13 +262,11 @@ class XAE_abstract(nn.Module):
                     test_loss_main.append(self.main_loss(x, recon).item(), n)
                     if self.lamb > 0:
                         test_loss_penalty.append(self.penalty_loss(fake_latent, prior_z, self.test_generator.batch_size).item(), n)
-                    print('[%i/%i]\ttest_main: %.4f\ttest_penalty: %.4f' % (i, len(self.test_generator), test_loss_main.avg, test_loss_penalty.avg), end = "\r")
+                    print(f'[{i+1:0{fttep}}/{ttep}] test_main: {test_loss_main.avg:.4f} test_penalty: {test_loss_penalty.avg:.4f}', end = "\r")
 
-                self.test_main_list.append(test_loss_main.avg)
-                self.test_penalty_list.append(test_loss_penalty.avg)
-                
-                self.log.info('[%d/%d]\ttrain_main: %.6e\ttrain_penalty: %.6e\ttest_main: %.6e\ttest_penalty: %.6e'
-                      % (epoch + 1, self.num_epoch, train_loss_main.avg, train_loss_penalty.avg, test_loss_main.avg, test_loss_penalty.avg))
+                test_main_list.append(test_loss_main.avg)
+                test_penalty_list.append(test_loss_penalty.avg)
+                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] train_main: {train_loss_main.avg:.6e} train_penalty: {train_loss_penalty.avg:.6e} test_main: {test_loss_main.avg:.6e} test_penalty: {test_loss_penalty.avg:.6e}')
 
                 # Additional test set
                 data = next(iter(self.test_generator))
@@ -290,11 +292,11 @@ class XAE_abstract(nn.Module):
                         self.writer.add_images('generated_sample', (test_dec[0:32])*0.5 + 0.5, epoch)
 
                     # Reconstruction
-                    self.writer.add_images('reconstruction', (np.concatenate((x.to('cpu').numpy()[0:16], recon.to('cpu').numpy()[0:16])))*0.5 + 0.5, epoch)
+                    self.writer.add_images('reconstruction', (np.concatenate((x.detach().to('cpu').numpy()[0:16], recon.detach().to('cpu').numpy()[0:16])))*0.5 + 0.5, epoch)
                     self.writer.flush()
 
                 if len(self.save_img_path) > 0:
-                    save_sample_images('%s/recon' % self.save_img_path, epoch, (np.concatenate((x.to('cpu').numpy()[0:32], recon.to('cpu').numpy()[0:32])))*0.5 + 0.5)
+                    save_sample_images('%s/recon' % self.save_img_path, epoch, (np.concatenate((x.detach().to('cpu').numpy()[0:32], recon.detach().to('cpu').numpy()[0:32])))*0.5 + 0.5)
                     plt.close()
                     if self.lamb > 0:
                         # Sample Generation
@@ -333,6 +335,9 @@ class XAE_abstract(nn.Module):
 
         if len(self.tensorboard_dir) > 0:
             self.writer.close()
+            
+        self.hist = np.array([train_main_list , train_penalty_list, test_main_list, test_penalty_list])
+
 
 class XAE_adv_abstract(XAE_abstract):
     def __init__(self, cfg, log, device = 'cpu', verbose = 1):
@@ -358,10 +363,10 @@ class XAE_adv_abstract(XAE_abstract):
         return self.disc_loss(pz, torch.ones_like(pz)) + self.disc_loss(qz, torch.zeros_like(qz))
 
     def train(self, resume = False):
-        self.train_main_list = []
-        self.train_penalty_list = []
-        self.test_main_list = []
-        self.test_penalty_list = []
+        train_main_list = []
+        train_penalty_list = []
+        test_main_list = []
+        test_penalty_list = []
 
         for net in self.encoder_trainable:
             net.train()
@@ -394,6 +399,12 @@ class XAE_adv_abstract(XAE_abstract):
                 scheduler_main.load_state_dict(checkpoint['scheduler_main'])
                 scheduler_adv.load_state_dict(checkpoint['scheduler_adv'])
 
+        trep = len(self.train_generator)
+        ftrep = len(str(trep))
+        ttep = len(self.test_generator)
+        fttep = len(str(ttep))
+        fep = len(str(self.num_epoch))
+        
         self.log.info('------------------------------------------------------------')
         self.log.info('Training Start!')
         start_time = time.time()
@@ -439,11 +450,10 @@ class XAE_adv_abstract(XAE_abstract):
                 if self.lamb > 0:
                     train_loss_penalty.append(penalty.item(), n)
                 
-                print('[%i/%i]\ttrain_main: %.4f\ttrain_penalty: %.4f' % (i+1, len(self.train_generator), train_loss_main.avg, train_loss_penalty.avg), 
-                      end = "\r")
+                print(f'[{i+1:0{ftrep}}/{trep}] train_main: {train_loss_main.avg:.4f} train_penalty: {train_loss_penalty.avg:.4f}', end = "\r")
 
-            self.train_main_list.append(train_loss_main.avg)
-            self.train_penalty_list.append(train_loss_penalty.avg)
+            train_main_list.append(train_loss_main.avg)
+            train_penalty_list.append(train_loss_penalty.avg)
 
             if len(self.tensorboard_dir) > 0:
                 self.writer.add_scalar('train/main', train_loss_main.avg, epoch)
@@ -469,13 +479,11 @@ class XAE_adv_abstract(XAE_abstract):
                     test_loss_main.append(self.main_loss(x, recon).item(), n)
                     if self.lamb > 0:
                         test_loss_penalty.append(penalty.item(), n)
-                    print('[%i/%i]\ttest_main: %.4f\ttest_penalty: %.4f' % (i, len(self.test_generator), test_loss_main.avg, test_loss_penalty.avg), end = "\r")
+                    print(f'[{i+1:0{fttep}}/{ttep}] test_main: {test_loss_main.avg:.4f} test_penalty: {test_loss_penalty.avg:.4f}', end = "\r")
 
-                self.test_main_list.append(test_loss_main.avg)
-                self.test_penalty_list.append(test_loss_penalty.avg)
-                
-                self.log.info('[%d/%d]\ttrain_main: %.6e\ttrain_penalty: %.6e\ttest_main: %.6e\ttest_penalty: %.6e'
-                      % (epoch + 1, self.num_epoch, train_loss_main.avg, train_loss_penalty.avg, test_loss_main.avg, test_loss_penalty.avg))
+                test_main_list.append(test_loss_main.avg)
+                test_penalty_list.append(test_loss_penalty.avg)
+                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] train_main: {train_loss_main.avg:.6e} train_penalty: {train_loss_penalty.avg:.6e} test_main: {test_loss_main.avg:.6e} test_penalty: {test_loss_penalty.avg:.6e}')
 
                 # Additional test set
                 data = next(iter(self.test_generator))
@@ -501,11 +509,11 @@ class XAE_adv_abstract(XAE_abstract):
                         self.writer.add_images('generated_sample', (test_dec[0:32])*0.5 + 0.5, epoch)
 
                     # Reconstruction
-                    self.writer.add_images('reconstruction', (np.concatenate((x.to('cpu').numpy()[0:16], recon.to('cpu').numpy()[0:16])))*0.5 + 0.5, epoch)
+                    self.writer.add_images('reconstruction', (np.concatenate((x.detach().to('cpu').numpy()[0:16], recon.detach().to('cpu').numpy()[0:16])))*0.5 + 0.5, epoch)
                     self.writer.flush()
 
                 if len(self.save_img_path) > 0:
-                    save_sample_images('%s/recon' % self.save_img_path, epoch, (np.concatenate((x.to('cpu').numpy()[0:32], recon.to('cpu').numpy()[0:32])))*0.5 + 0.5)
+                    save_sample_images('%s/recon' % self.save_img_path, epoch, (np.concatenate((x.detach().to('cpu').numpy()[0:32], recon.detach().to('cpu').numpy()[0:32])))*0.5 + 0.5)
                     plt.close()
                     if self.lamb > 0:
                         # Sample Generation
@@ -548,6 +556,8 @@ class XAE_adv_abstract(XAE_abstract):
 
         if len(self.tensorboard_dir) > 0:
             self.writer.close()
+
+        self.hist = np.array([train_main_list , train_penalty_list, test_main_list, test_penalty_list])
 
 class CXAE_abstract(XAE_abstract):
     def __init__(self, cfg, log, device = 'cpu', verbose = 1):
@@ -614,10 +624,10 @@ class CXAE_abstract(XAE_abstract):
                 break
 
     def train(self, resume = False):
-        self.train_main_list = []
-        self.train_penalty_list = []
-        self.test_main_list = []
-        self.test_penalty_list = []
+        train_main_list = []
+        train_penalty_list = []
+        test_main_list = []
+        test_penalty_list = []
 
         for net in self.encoder_trainable:
             net.train()
@@ -643,6 +653,12 @@ class CXAE_abstract(XAE_abstract):
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if len(self.lr_schedule) > 0:
                 scheduler.load_state_dict(checkpoint['scheduler'])
+
+        trep = len(self.train_generator)
+        ftrep = len(str(trep))
+        ttep = len(self.test_generator)
+        fttep = len(str(ttep))
+        fep = len(str(self.num_epoch))
 
         self.log.info('------------------------------------------------------------')
         self.log.info('Training Start!')
@@ -680,11 +696,10 @@ class CXAE_abstract(XAE_abstract):
                 if self.lamb > 0:
                     train_loss_penalty.append(penalty.item(), n)
                 
-                print('[%i/%i]\ttrain_main: %.4f\ttrain_penalty: %.4f' % (i+1, len(self.train_generator), train_loss_main.avg, train_loss_penalty.avg), 
-                      end = "\r")
+                print(f'[{i+1:0{ftrep}}/{trep}] train_main: {train_loss_main.avg:.4f} train_penalty: {train_loss_penalty.avg:.4f}', end = "\r")
 
-            self.train_main_list.append(train_loss_main.avg)
-            self.train_penalty_list.append(train_loss_penalty.avg)
+            train_main_list.append(train_loss_main.avg)
+            train_penalty_list.append(train_loss_penalty.avg)
 
             if len(self.tensorboard_dir) > 0:
                 self.writer.add_scalar('train/main', train_loss_main.avg, epoch)
@@ -711,13 +726,11 @@ class CXAE_abstract(XAE_abstract):
                     test_loss_main.append(self.main_loss(x, recon).item(), n)
                     if self.lamb > 0:
                         test_loss_penalty.append(self.penalty_loss(fake_latent, prior_z, self.test_generator.batch_size).item(), n)
-                    print('[%i/%i]\ttest_main: %.4f\ttest_penalty: %.4f' % (i, len(self.test_generator), test_loss_main.avg, test_loss_penalty.avg), end = "\r")
+                    print(f'[{i+1:0{fttep}}/{ttep}] test_main: {test_loss_main.avg:.4f} test_penalty: {test_loss_penalty.avg:.4f}', end = "\r")
 
-                self.test_main_list.append(test_loss_main.avg)
-                self.test_penalty_list.append(test_loss_penalty.avg)
-                
-                self.log.info('[%d/%d]\ttrain_main: %.6e\ttrain_penalty: %.6e\ttest_main: %.6e\ttest_penalty: %.6e'
-                      % (epoch + 1, self.num_epoch, train_loss_main.avg, train_loss_penalty.avg, test_loss_main.avg, test_loss_penalty.avg))
+                test_main_list.append(test_loss_main.avg)
+                test_penalty_list.append(test_loss_penalty.avg)
+                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] train_main: {train_loss_main.avg:.6e} train_penalty: {train_loss_penalty.avg:.6e} test_main: {test_loss_main.avg:.6e} test_penalty: {test_loss_penalty.avg:.6e}')
 
                 # Additional test set
                 data, condition = next(iter(self.test_generator))
@@ -744,11 +757,11 @@ class CXAE_abstract(XAE_abstract):
                         self.writer.add_images('generated_sample', (test_dec[0:32])*0.5 + 0.5, epoch)
 
                     # Reconstruction
-                    self.writer.add_images('reconstruction', (np.concatenate((x.to('cpu').numpy()[0:16], recon.to('cpu').numpy()[0:16])))*0.5 + 0.5, epoch)
+                    self.writer.add_images('reconstruction', (np.concatenate((x.detach().to('cpu').numpy()[0:16], recon.detach().to('cpu').numpy()[0:16])))*0.5 + 0.5, epoch)
                     self.writer.flush()
 
                 if len(self.save_img_path) > 0:
-                    save_sample_images('%s/recon' % self.save_img_path, epoch, (np.concatenate((x.to('cpu').numpy()[0:32], recon.to('cpu').numpy()[0:32])))*0.5 + 0.5)
+                    save_sample_images('%s/recon' % self.save_img_path, epoch, (np.concatenate((x.detach().to('cpu').numpy()[0:32], recon.detach().to('cpu').numpy()[0:32])))*0.5 + 0.5)
                     plt.close()
                     if self.lamb > 0:
                         # Sample Generation
@@ -787,6 +800,8 @@ class CXAE_abstract(XAE_abstract):
 
         if len(self.tensorboard_dir) > 0:
             self.writer.close()
+
+        self.hist = np.array([train_main_list , train_penalty_list, test_main_list, test_penalty_list])
 
 class CXAE_adv_abstract(XAE_adv_abstract):
     def __init__(self, cfg, log, device = 'cpu', verbose = 1):
@@ -841,7 +856,6 @@ class CXAE_adv_abstract(XAE_adv_abstract):
                 loss.backward()
                 optimizer.step()
                 
-                # train_loss_main.append(loss.item(), len(data))
                 if loss.item() > 0.1 or cur_step < 10:
                     print('train_main: %.4f at %i step' % (loss.item(), cur_step), end = "\r")
                 else:
@@ -853,10 +867,10 @@ class CXAE_adv_abstract(XAE_adv_abstract):
                 break
 
     def train(self, resume = False):
-        self.train_main_list = []
-        self.train_penalty_list = []
-        self.test_main_list = []
-        self.test_penalty_list = []
+        train_main_list = []
+        train_penalty_list = []
+        test_main_list = []
+        test_penalty_list = []
 
         for net in self.encoder_trainable:
             net.train()
@@ -888,6 +902,12 @@ class CXAE_adv_abstract(XAE_adv_abstract):
             if len(self.lr_schedule) > 0:
                 scheduler_main.load_state_dict(checkpoint['scheduler_main'])
                 scheduler_adv.load_state_dict(checkpoint['scheduler_adv'])
+
+        trep = len(self.train_generator)
+        ftrep = len(str(trep))
+        ttep = len(self.test_generator)
+        fttep = len(str(ttep))
+        fep = len(str(self.num_epoch))
 
         self.log.info('------------------------------------------------------------')
         self.log.info('Training Start!')
@@ -935,11 +955,10 @@ class CXAE_adv_abstract(XAE_adv_abstract):
                 if self.lamb > 0:
                     train_loss_penalty.append(penalty.item(), n)
                 
-                print('[%i/%i]\ttrain_main: %.4f\ttrain_penalty: %.4f' % (i+1, len(self.train_generator), train_loss_main.avg, train_loss_penalty.avg), 
-                      end = "\r")
+                print(f'[{i+1:0{ftrep}}/{trep}] train_main: {train_loss_main.avg:.4f} train_penalty: {train_loss_penalty.avg:.4f}', end = "\r")
 
-            self.train_main_list.append(train_loss_main.avg)
-            self.train_penalty_list.append(train_loss_penalty.avg)
+            train_main_list.append(train_loss_main.avg)
+            train_penalty_list.append(train_loss_penalty.avg)
 
             if len(self.tensorboard_dir) > 0:
                 self.writer.add_scalar('train/main', train_loss_main.avg, epoch)
@@ -966,13 +985,11 @@ class CXAE_adv_abstract(XAE_adv_abstract):
                     test_loss_main.append(self.main_loss(x, recon).item(), n)
                     if self.lamb > 0:
                         test_loss_penalty.append(penalty.item(), n)
-                    print('[%i/%i]\ttest_main: %.4f\ttest_penalty: %.4f' % (i, len(self.test_generator), test_loss_main.avg, test_loss_penalty.avg), end = "\r")
+                    print(f'[{i+1:0{fttep}}/{ttep}] test_main: {test_loss_main.avg:.4f} test_penalty: {test_loss_penalty.avg:.4f}', end = "\r")
 
-                self.test_main_list.append(test_loss_main.avg)
-                self.test_penalty_list.append(test_loss_penalty.avg)
-                
-                self.log.info('[%d/%d]\ttrain_main: %.6e\ttrain_penalty: %.6e\ttest_main: %.6e\ttest_penalty: %.6e'
-                      % (epoch + 1, self.num_epoch, train_loss_main.avg, train_loss_penalty.avg, test_loss_main.avg, test_loss_penalty.avg))
+                test_main_list.append(test_loss_main.avg)
+                test_penalty_list.append(test_loss_penalty.avg)
+                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] train_main: {train_loss_main.avg:.6e} train_penalty: {train_loss_penalty.avg:.6e} test_main: {test_loss_main.avg:.6e} test_penalty: {test_loss_penalty.avg:.6e}')
 
                 # Additional test set
                 data, condition = next(iter(self.test_generator))
@@ -999,11 +1016,11 @@ class CXAE_adv_abstract(XAE_adv_abstract):
                         self.writer.add_images('generated_sample', (test_dec[0:32])*0.5 + 0.5, epoch)
 
                     # Reconstruction
-                    self.writer.add_images('reconstruction', (np.concatenate((x.to('cpu').numpy()[0:16], recon.to('cpu').numpy()[0:16])))*0.5 + 0.5, epoch)
+                    self.writer.add_images('reconstruction', (np.concatenate((x.detach().to('cpu').numpy()[0:16], recon.detach().to('cpu').numpy()[0:16])))*0.5 + 0.5, epoch)
                     self.writer.flush()
 
                 if len(self.save_img_path) > 0:
-                    save_sample_images('%s/recon' % self.save_img_path, epoch, (np.concatenate((x.to('cpu').numpy()[0:32], recon.to('cpu').numpy()[0:32])))*0.5 + 0.5)
+                    save_sample_images('%s/recon' % self.save_img_path, epoch, (np.concatenate((x.detach().to('cpu').numpy()[0:32], recon.detach().to('cpu').numpy()[0:32])))*0.5 + 0.5)
                     plt.close()
                     if self.lamb > 0:
                         # Sample Generation
@@ -1046,3 +1063,5 @@ class CXAE_adv_abstract(XAE_adv_abstract):
 
         if len(self.tensorboard_dir) > 0:
             self.writer.close()
+
+        self.hist = np.array([train_main_list , train_penalty_list, test_main_list, test_penalty_list])
