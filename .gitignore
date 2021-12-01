@@ -10,4 +10,8 @@ XAE/result/tb_logs/
 
 *.pt
 
-XAE/result/
+XAE/result/plots
+XAE/result/states
+XAE/result/tb_logs
+XAE/result/weights
+
