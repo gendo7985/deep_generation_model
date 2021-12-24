@@ -41,7 +41,7 @@ class CelebA(torch.utils.data.Dataset):
             return 2.0*self.transform(im) - 1.0
         
 class MNIST(torch.utils.data.Dataset):
-    def __init__(self, data_home, train = True, label = False, output_channels = 1):
+    def __init__(self, data_home, train = True, label = False, output_channels = 1, portion = 1.0):
         self.label = label
         self.output_channels = output_channels
         if train:
@@ -49,7 +49,11 @@ class MNIST(torch.utils.data.Dataset):
         else:
             self.data = np.loadtxt('%s/mnist_test.csv' % data_home, delimiter=',', skiprows = 1)
 
-        self.code = torch.from_numpy(np.eye(10)).type(torch.float32)
+        if portion < 1.0:
+            k = int(np.shape(self.data)[0]*portion)
+            self.data[k:, 0] = 10
+
+        self.code = torch.from_numpy(np.concatenate([np.eye(10), np.zeros((1,10))], axis = 0)).type(torch.float32)
         
     def __len__(self):
         return np.shape(self.data)[0]
@@ -67,9 +71,10 @@ class MNIST(torch.utils.data.Dataset):
                 return torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.) .reshape((1,28,28)).type(torch.float32)
 
 class rmMNIST(MNIST):
-    def __init__(self, data_home, train = True, label = False, output_channels = 1, aux = None):
+    def __init__(self, data_home, train = True, label = False, output_channels = 1, aux = None, portion = 1.0):
         self.label = label
         self.output_channels = output_channels
+        self.portion = portion
         
         if train:
             self.data = np.loadtxt('%s/mnist_train.csv' % data_home, delimiter=',', skiprows = 1)
@@ -84,17 +89,21 @@ class rmMNIST(MNIST):
             # count all counts for each digit
             all_ind = []
             recode = 0
+            unknown = 0
             for i in aux[0]:
-                using_digit_ind = lab_ind[i]
+                k = int(len(lab_ind[i])*self.portion)
+                using_digit_ind = lab_ind[i][0:k]
                 self.data[using_digit_ind, 0] = recode
                 all_ind += using_digit_ind
                 recode += 1
             for i in aux[1]:
-                using_digit_ind = lab_ind[i]
+                k = int(len(lab_ind[i])*self.portion)
+                using_digit_ind = lab_ind[i][0:k]
                 self.data[using_digit_ind, 0] = recode
                 all_ind += using_digit_ind
+                unknown = 1
             self.data = self.data[all_ind]
-            self.code = torch.from_numpy(np.eye(recode+1)).type(torch.float32)
+            self.code = torch.from_numpy(np.eye(recode + unknown)).type(torch.float32)
         else:
             self.code = torch.from_numpy(np.eye(10)).type(torch.float32)
 

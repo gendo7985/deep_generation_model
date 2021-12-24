@@ -36,21 +36,15 @@ class XAE_abstract(nn.Module):
         self.z_dim = int(cfg['train_info']['z_dim'])
         self.z_sampler = getattr(sampler, cfg['train_info']['z_sampler']) # generate prior
 
-        data_class = getattr(dataset, cfg['train_info']['train_data'])
-        labeled = cfg['train_info'].getboolean('train_data_label')
+        self.data_class = getattr(dataset, cfg['train_info']['train_data'])
+        self.labeled = cfg['train_info'].getboolean('train_data_label')
         self.validate_batch = cfg['train_info'].getboolean('validate')
-        try:
-            self.train_data =  data_class(cfg['path_info']['data_home'], train = True, label = labeled)
-            self.test_data = data_class(cfg['path_info']['data_home'], train = False, label = labeled)
 
+        try:
+            self.data_home = cfg['path_info']['data_home']
             self.batch_size = int(cfg['train_info']['batch_size'])
-            if cfg['train_info'].getboolean('replace'):
-                it = int(cfg['train_info']['iter_per_epoch'])
-                train_sampler = torch.utils.data.RandomSampler(self.train_data, replacement = True, num_samples = self.batch_size * it)
-                self.train_generator = torch.utils.data.DataLoader(self.train_data, self.batch_size, num_workers = 5, sampler = train_sampler, pin_memory=True)
-            else:
-                self.train_generator = torch.utils.data.DataLoader(self.train_data, self.batch_size, num_workers = 5, shuffle = True, pin_memory=True, drop_last=True)
-            self.test_generator = torch.utils.data.DataLoader(self.test_data, self.batch_size, num_workers = 5, shuffle = False, pin_memory=True, drop_last=True)
+            self.replace = cfg['train_info'].getboolean('replace')
+            self.iter_per_epoch = int(cfg['train_info']['iter_per_epoch'])
         except KeyError:
             pass
             
@@ -62,9 +56,9 @@ class XAE_abstract(nn.Module):
         
         self.encoder_pretrain = cfg['train_info'].getboolean('encoder_pretrain')
         if self.encoder_pretrain:
-            self.encoder_pretrain_batch_size = int(cfg['train_info']['encoder_pretrain_batch_size'])
-            self.encoder_pretrain_step = int(cfg['train_info']['encoder_pretrain_max_step'])
-            self.pretrain_generator = torch.utils.data.DataLoader(self.train_data, self.encoder_pretrain_batch_size, num_workers = 5, shuffle = True, pin_memory=True, drop_last=True)
+            # self.encoder_pretrain_batch_size = int(cfg['train_info']['encoder_pretrain_batch_size'])
+            self.encoder_pretrain_step = int(cfg['train_info']['encoder_pretrain_step'])
+            # self.pretrain_generator = torch.utils.data.DataLoader(self.train_data, self.encoder_pretrain_batch_size, num_workers = 5, shuffle = True, pin_memory=True, drop_last=True)
 
         
         self.lr = float(cfg['train_info']['lr'])
@@ -152,9 +146,9 @@ class XAE_abstract(nn.Module):
                 optimizer.step()
                 
                 if loss.item() > 0.1 or cur_step < 10:
-                    print('train_main: %.4f at %i step' % (loss.item(), cur_step), end = "\r")
+                    print('loss: %.4f at %i step' % (loss.item(), cur_step), end = "\r")
                 else:
-                    self.log.info('train_main: %.4f at %i step' % (loss.item(), cur_step))
+                    self.log.info('loss: %.4f at %i step' % (loss.item(), cur_step))
                     break_ind = True
                     break
                     
@@ -191,6 +185,16 @@ class XAE_abstract(nn.Module):
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if len(self.lr_schedule) > 0:
                 scheduler.load_state_dict(checkpoint['scheduler'])
+
+        self.train_data =  self.data_class(self.data_home, train = True, label = self.labeled)
+        self.test_data = self.data_class(self.data_home, train = False, label = self.labeled)
+
+        if self.replace:
+            self.train_sampler = torch.utils.data.RandomSampler(self.train_data, replacement = True, num_samples = self.batch_size * self.iter_per_epoch)
+            self.train_generator = torch.utils.data.DataLoader(self.train_data, self.batch_size, num_workers = 5, sampler = self.train_sampler, pin_memory=True)
+        else:
+            self.train_generator = torch.utils.data.DataLoader(self.train_data, self.batch_size, num_workers = 5, shuffle = True, pin_memory=True, drop_last=True)
+        self.test_generator = torch.utils.data.DataLoader(self.test_data, self.batch_size, num_workers = 5, shuffle = False, pin_memory=True, drop_last=True)
 
         trep = len(self.train_generator)
         ftrep = len(str(trep))
@@ -233,7 +237,7 @@ class XAE_abstract(nn.Module):
                 if self.lamb > 0:
                     train_loss_penalty.append(penalty.item(), n)
                 
-                print(f'[{i+1:0{ftrep}}/{trep}] train_main: {train_loss_main.avg:.4f} train_penalty: {train_loss_penalty.avg:.4f}', end = "\r")
+                print(f'[{i+1:0{ftrep}}/{trep}] loss: {train_loss_main.avg:.4f} D: {train_loss_penalty.avg:.4f}', end = "\r")
 
             train_main_list.append(train_loss_main.avg)
             train_penalty_list.append(train_loss_penalty.avg)
@@ -262,11 +266,11 @@ class XAE_abstract(nn.Module):
                     test_loss_main.append(self.main_loss(x, recon).item(), n)
                     if self.lamb > 0:
                         test_loss_penalty.append(self.penalty_loss(fake_latent, prior_z, self.test_generator.batch_size).item(), n)
-                    print(f'[{i+1:0{fttep}}/{ttep}] test_main: {test_loss_main.avg:.4f} test_penalty: {test_loss_penalty.avg:.4f}', end = "\r")
+                    print(f'[{i+1:0{fttep}}/{ttep}] test loss: {test_loss_main.avg:.4f} D: {test_loss_penalty.avg:.4f}', end = "\r")
 
                 test_main_list.append(test_loss_main.avg)
                 test_penalty_list.append(test_loss_penalty.avg)
-                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] train_main: {train_loss_main.avg:.6e} train_penalty: {train_loss_penalty.avg:.6e} test_main: {test_loss_main.avg:.6e} test_penalty: {test_loss_penalty.avg:.6e}')
+                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] loss: {train_loss_main.avg:.6e} D: {train_loss_penalty.avg:.6e} test loss: {test_loss_main.avg:.6e} D: {test_loss_penalty.avg:.6e}')
 
                 # Additional test set
                 data = next(iter(self.test_generator))
@@ -399,6 +403,16 @@ class XAE_adv_abstract(XAE_abstract):
                 scheduler_main.load_state_dict(checkpoint['scheduler_main'])
                 scheduler_adv.load_state_dict(checkpoint['scheduler_adv'])
 
+        self.train_data =  self.data_class(self.data_home, train = True, label = self.labeled)
+        self.test_data = self.data_class(self.data_home, train = False, label = self.labeled)
+
+        if self.replace:
+            self.train_sampler = torch.utils.data.RandomSampler(self.train_data, replacement = True, num_samples = self.batch_size * self.iter_per_epoch)
+            self.train_generator = torch.utils.data.DataLoader(self.train_data, self.batch_size, num_workers = 5, sampler = self.train_sampler, pin_memory=True)
+        else:
+            self.train_generator = torch.utils.data.DataLoader(self.train_data, self.batch_size, num_workers = 5, shuffle = True, pin_memory=True, drop_last=True)
+        self.test_generator = torch.utils.data.DataLoader(self.test_data, self.batch_size, num_workers = 5, shuffle = False, pin_memory=True, drop_last=True)
+
         trep = len(self.train_generator)
         ftrep = len(str(trep))
         ttep = len(self.test_generator)
@@ -450,7 +464,7 @@ class XAE_adv_abstract(XAE_abstract):
                 if self.lamb > 0:
                     train_loss_penalty.append(penalty.item(), n)
                 
-                print(f'[{i+1:0{ftrep}}/{trep}] train_main: {train_loss_main.avg:.4f} train_penalty: {train_loss_penalty.avg:.4f}', end = "\r")
+                print(f'[{i+1:0{ftrep}}/{trep}] loss: {train_loss_main.avg:.4f} D: {train_loss_penalty.avg:.4f}', end = "\r")
 
             train_main_list.append(train_loss_main.avg)
             train_penalty_list.append(train_loss_penalty.avg)
@@ -479,11 +493,11 @@ class XAE_adv_abstract(XAE_abstract):
                     test_loss_main.append(self.main_loss(x, recon).item(), n)
                     if self.lamb > 0:
                         test_loss_penalty.append(penalty.item(), n)
-                    print(f'[{i+1:0{fttep}}/{ttep}] test_main: {test_loss_main.avg:.4f} test_penalty: {test_loss_penalty.avg:.4f}', end = "\r")
+                    print(f'[{i+1:0{fttep}}/{ttep}] test loss: {test_loss_main.avg:.4f} D: {test_loss_penalty.avg:.4f}', end = "\r")
 
                 test_main_list.append(test_loss_main.avg)
                 test_penalty_list.append(test_loss_penalty.avg)
-                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] train_main: {train_loss_main.avg:.6e} train_penalty: {train_loss_penalty.avg:.6e} test_main: {test_loss_main.avg:.6e} test_penalty: {test_loss_penalty.avg:.6e}')
+                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] loss: {train_loss_main.avg:.6e} D: {train_loss_penalty.avg:.6e} test loss: {test_loss_main.avg:.6e} D: {test_loss_penalty.avg:.6e}')
 
                 # Additional test set
                 data = next(iter(self.test_generator))
@@ -568,7 +582,7 @@ class CXAE_abstract(XAE_abstract):
         # Abstract part
         self.embed_data = nn.Identity()
         self.embed_condition = nn.Identity()
-        # self.embed_label = nn.Identity()
+        self.embed_label = nn.Identity()
 
     def encode(self, x, y):
         return torch.cat((self.enc(torch.cat((self.embed_data(x), self.embed_condition(y)), dim = 1)), self.embed_condition(y)), dim = 1)
@@ -614,9 +628,9 @@ class CXAE_abstract(XAE_abstract):
                 
                 # train_loss_main.append(loss.item(), len(data))
                 if loss.item() > 0.1 or cur_step < 10:
-                    print('train_main: %.4f at %i step' % (loss.item(), cur_step), end = "\r")
+                    print('loss: %.4f at %i step' % (loss.item(), cur_step), end = "\r")
                 else:
-                    self.log.info('train_main: %.4f at %i step' % (loss.item(), cur_step))
+                    self.log.info('loss: %.4f at %i step' % (loss.item(), cur_step))
                     break_ind = True
                     break
                     
@@ -653,6 +667,16 @@ class CXAE_abstract(XAE_abstract):
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if len(self.lr_schedule) > 0:
                 scheduler.load_state_dict(checkpoint['scheduler'])
+
+        self.train_data =  self.data_class(self.data_home, train = True, label = self.labeled)
+        self.test_data = self.data_class(self.data_home, train = False, label = self.labeled)
+
+        if self.replace:
+            self.train_sampler = torch.utils.data.RandomSampler(self.train_data, replacement = True, num_samples = self.batch_size * self.iter_per_epoch)
+            self.train_generator = torch.utils.data.DataLoader(self.train_data, self.batch_size, num_workers = 5, sampler = self.train_sampler, pin_memory=True)
+        else:
+            self.train_generator = torch.utils.data.DataLoader(self.train_data, self.batch_size, num_workers = 5, shuffle = True, pin_memory=True, drop_last=True)
+        self.test_generator = torch.utils.data.DataLoader(self.test_data, self.batch_size, num_workers = 5, shuffle = False, pin_memory=True, drop_last=True)
 
         trep = len(self.train_generator)
         ftrep = len(str(trep))
@@ -696,7 +720,7 @@ class CXAE_abstract(XAE_abstract):
                 if self.lamb > 0:
                     train_loss_penalty.append(penalty.item(), n)
                 
-                print(f'[{i+1:0{ftrep}}/{trep}] train_main: {train_loss_main.avg:.4f} train_penalty: {train_loss_penalty.avg:.4f}', end = "\r")
+                print(f'[{i+1:0{ftrep}}/{trep}] loss: {train_loss_main.avg:.4f} D: {train_loss_penalty.avg:.4f}', end = "\r")
 
             train_main_list.append(train_loss_main.avg)
             train_penalty_list.append(train_loss_penalty.avg)
@@ -726,11 +750,11 @@ class CXAE_abstract(XAE_abstract):
                     test_loss_main.append(self.main_loss(x, recon).item(), n)
                     if self.lamb > 0:
                         test_loss_penalty.append(self.penalty_loss(fake_latent, prior_z, self.test_generator.batch_size).item(), n)
-                    print(f'[{i+1:0{fttep}}/{ttep}] test_main: {test_loss_main.avg:.4f} test_penalty: {test_loss_penalty.avg:.4f}', end = "\r")
+                    print(f'[{i+1:0{fttep}}/{ttep}] test loss: {test_loss_main.avg:.4f} D: {test_loss_penalty.avg:.4f}', end = "\r")
 
                 test_main_list.append(test_loss_main.avg)
                 test_penalty_list.append(test_loss_penalty.avg)
-                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] train_main: {train_loss_main.avg:.6e} train_penalty: {train_loss_penalty.avg:.6e} test_main: {test_loss_main.avg:.6e} test_penalty: {test_loss_penalty.avg:.6e}')
+                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] loss: {train_loss_main.avg:.6e} D: {train_loss_penalty.avg:.6e} test loss: {test_loss_main.avg:.6e} D: {test_loss_penalty.avg:.6e}')
 
                 # Additional test set
                 data, condition = next(iter(self.test_generator))
@@ -812,7 +836,7 @@ class CXAE_adv_abstract(XAE_adv_abstract):
         # Abstract part
         self.embed_data = nn.Identity()
         self.embed_condition = nn.Identity()
-        # self.embed_label = nn.Identity()
+        self.embed_label = nn.Identity()
 
     def encode(self, x, y):
         return torch.cat((self.enc(torch.cat((self.embed_data(x), self.embed_condition(y)), dim = 1)), self.embed_condition(y)), dim = 1)
@@ -857,9 +881,9 @@ class CXAE_adv_abstract(XAE_adv_abstract):
                 optimizer.step()
                 
                 if loss.item() > 0.1 or cur_step < 10:
-                    print('train_main: %.4f at %i step' % (loss.item(), cur_step), end = "\r")
+                    print('loss: %.4f at %i step' % (loss.item(), cur_step), end = "\r")
                 else:
-                    self.log.info('train_main: %.4f at %i step' % (loss.item(), cur_step))
+                    self.log.info('loss: %.4f at %i step' % (loss.item(), cur_step))
                     break_ind = True
                     break
                     
@@ -902,6 +926,16 @@ class CXAE_adv_abstract(XAE_adv_abstract):
             if len(self.lr_schedule) > 0:
                 scheduler_main.load_state_dict(checkpoint['scheduler_main'])
                 scheduler_adv.load_state_dict(checkpoint['scheduler_adv'])
+
+        self.train_data =  self.data_class(self.data_home, train = True, label = self.labeled)
+        self.test_data = self.data_class(self.data_home, train = False, label = self.labeled)
+
+        if self.replace:
+            self.train_sampler = torch.utils.data.RandomSampler(self.train_data, replacement = True, num_samples = self.batch_size * self.iter_per_epoch)
+            self.train_generator = torch.utils.data.DataLoader(self.train_data, self.batch_size, num_workers = 5, sampler = self.train_sampler, pin_memory=True)
+        else:
+            self.train_generator = torch.utils.data.DataLoader(self.train_data, self.batch_size, num_workers = 5, shuffle = True, pin_memory=True, drop_last=True)
+        self.test_generator = torch.utils.data.DataLoader(self.test_data, self.batch_size, num_workers = 5, shuffle = False, pin_memory=True, drop_last=True)
 
         trep = len(self.train_generator)
         ftrep = len(str(trep))
@@ -955,7 +989,7 @@ class CXAE_adv_abstract(XAE_adv_abstract):
                 if self.lamb > 0:
                     train_loss_penalty.append(penalty.item(), n)
                 
-                print(f'[{i+1:0{ftrep}}/{trep}] train_main: {train_loss_main.avg:.4f} train_penalty: {train_loss_penalty.avg:.4f}', end = "\r")
+                print(f'[{i+1:0{ftrep}}/{trep}] loss: {train_loss_main.avg:.4f} D: {train_loss_penalty.avg:.4f}', end = "\r")
 
             train_main_list.append(train_loss_main.avg)
             train_penalty_list.append(train_loss_penalty.avg)
@@ -985,11 +1019,11 @@ class CXAE_adv_abstract(XAE_adv_abstract):
                     test_loss_main.append(self.main_loss(x, recon).item(), n)
                     if self.lamb > 0:
                         test_loss_penalty.append(penalty.item(), n)
-                    print(f'[{i+1:0{fttep}}/{ttep}] test_main: {test_loss_main.avg:.4f} test_penalty: {test_loss_penalty.avg:.4f}', end = "\r")
+                    print(f'[{i+1:0{fttep}}/{ttep}] test loss: {test_loss_main.avg:.4f} D: {test_loss_penalty.avg:.4f}', end = "\r")
 
                 test_main_list.append(test_loss_main.avg)
                 test_penalty_list.append(test_loss_penalty.avg)
-                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] train_main: {train_loss_main.avg:.6e} train_penalty: {train_loss_penalty.avg:.6e} test_main: {test_loss_main.avg:.6e} test_penalty: {test_loss_penalty.avg:.6e}')
+                self.log.info(f'[{epoch + 1:0{fep}}/{self.num_epoch}] loss: {train_loss_main.avg:.6e} D: {train_loss_penalty.avg:.6e} test loss: {test_loss_main.avg:.6e} D: {test_loss_penalty.avg:.6e}')
 
                 # Additional test set
                 data, condition = next(iter(self.test_generator))
