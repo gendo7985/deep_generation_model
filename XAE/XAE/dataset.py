@@ -41,8 +41,9 @@ class CelebA(torch.utils.data.Dataset):
             return 2.0*self.transform(im) - 1.0
         
 class MNIST(torch.utils.data.Dataset):
-    def __init__(self, data_home, train = True, label = False, output_channels = 1, portion = 1.0):
+    def __init__(self, data_home, train = True, label = False, output_channels = 1, portion = 1.0, class_no = False):
         self.label = label
+        self.class_no = class_no
         self.output_channels = output_channels
         if train:
             self.data = np.loadtxt('%s/mnist_train.csv' % data_home, delimiter=',', skiprows = 1)
@@ -60,10 +61,13 @@ class MNIST(torch.utils.data.Dataset):
     
     def __getitem__(self, idx):
         if self.label:
+            y = self.data[idx, 0].astype(np.int)
+            if not self.class_no:
+                y = self.code[y]
             if self.output_channels > 1:
-                return [torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.).reshape((1,28,28)).type(torch.float32).repeat((self.output_channels,1,1)), self.code[self.data[idx, 0].astype(np.int)]]
+                return [torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.).reshape((1,28,28)).type(torch.float32).repeat((self.output_channels,1,1)), y]
             else:
-                return [torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.).reshape((1,28,28)).type(torch.float32), self.code[self.data[idx, 0].astype(np.int)]]
+                return [torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.).reshape((1,28,28)).type(torch.float32), y]
         else:
             if self.output_channels > 1:
                 return torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.) .reshape((1,28,28)).type(torch.float32).repeat((self.output_channels,1,1))
@@ -71,10 +75,11 @@ class MNIST(torch.utils.data.Dataset):
                 return torch.from_numpy(2. * (self.data[idx, 1:785]/255) - 1.) .reshape((1,28,28)).type(torch.float32)
 
 class rmMNIST(MNIST):
-    def __init__(self, data_home, train = True, label = False, output_channels = 1, aux = None, portion = 1.0):
+    def __init__(self, data_home, train = True, label = False, output_channels = 1, aux = None, portion = 1.0, class_no = False):
         self.label = label
+        self.class_no = class_no
         self.output_channels = output_channels
-        self.portion = portion
+        # self.portion = portion
         
         if train:
             self.data = np.loadtxt('%s/mnist_train.csv' % data_home, delimiter=',', skiprows = 1)
@@ -91,13 +96,13 @@ class rmMNIST(MNIST):
             recode = 0
             unknown = 0
             for i in aux[0]:
-                k = int(len(lab_ind[i])*self.portion)
+                k = int(len(lab_ind[i])*portion)
                 using_digit_ind = lab_ind[i][0:k]
                 self.data[using_digit_ind, 0] = recode
                 all_ind += using_digit_ind
                 recode += 1
             for i in aux[1]:
-                k = int(len(lab_ind[i])*self.portion)
+                k = int(len(lab_ind[i])*portion)
                 using_digit_ind = lab_ind[i][0:k]
                 self.data[using_digit_ind, 0] = recode
                 all_ind += using_digit_ind

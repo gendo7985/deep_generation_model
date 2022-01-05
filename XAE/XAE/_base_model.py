@@ -2,6 +2,8 @@ import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 try:
     from torch.utils.tensorboard import SummaryWriter

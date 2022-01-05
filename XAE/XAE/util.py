@@ -98,6 +98,15 @@ class MixedLayer(nn.Module):
     def forward(self, x):
         return torch.cat((self.mu1(x[:, 0:self.p]), self.mu2(x[:, self.p:(self.p + self.r)]), x[:, (self.p + self.r):(self.p + self.r + self.i)]), axis = 1)
 
+def gather_centroid(cls, dat):
+    labs, idxs, counts = cls.unique(dim = 0, return_inverse = True, return_counts = True)
+    
+    idxs = idxs.view(idxs.size(0), 1).expand(-1, dat.size(1))
+    res = torch.zeros((labs.size(0), dat.size(1)), dtype = torch.float).scatter_add_(0, idxs, dat)
+    res = res/counts.view(res.size(0), 1)
+    
+    return res.gather(0, idxs)
+
 def get_lr(optimizer):
     for param_group in optimizer.param_groups:
         return param_group['lr']
