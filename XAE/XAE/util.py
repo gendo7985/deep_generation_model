@@ -46,14 +46,16 @@ class prob_enc(nn.Module):
 
 
 class prob_gauss_mix(nn.Module):
-    def __init__(self, n, m, eps):
+    def __init__(self, n, m):
         super(prob_gauss_mix, self).__init__()
         self.mu = nn.Linear(n, m, bias=False)
-        self.eps = eps
+        self.cov = nn.ConvTranspose2d(n, 1, m, bias=False)
+        self.n, self.m = n, m
 
     def forward(self, x):
         mu = self.mu(x)
-        return mu + self.eps * torch.randn_like(mu)
+        cov = self.cov(x.view(-1, self.n, 1, 1)).view(-1, self.m, self.m)
+        return mu + torch.bmm(cov, torch.randn_like(mu.view(-1, self.m, 1))).view(-1, self.m)
 
 
 class prob_mixture_enc(nn.Module):
