@@ -1955,6 +1955,725 @@ class SSWAE_HSIC_dev2_2(SSWAE_HSIC_dev2):
         )
 
 
+class SSWAE_HSIC_dev2_3(SSWAE_HSIC_dev2):
+    def __init__(self, cfg, log, device="cpu", verbose=1):
+        super(SSWAE_HSIC_dev2_3, self).__init__(cfg, log, device, verbose)
+
+    def encode_f1(self, y):
+        return self.gm(y)
+
+    def penalty_loss(self, q, prior_y, n):
+        x = q[:, 0 : self.y_dim]
+
+        mmd = (self.k(x, x, False) + self.k(prior_y, prior_y, False)) / (n * (n - 1)) - 2 * self.k(
+            x, prior_y, True
+        ) / (n * n)
+
+        z = q[:, self.y_dim :]
+        qz = self.discriminate(z)
+        gan = self.disc_loss(qz, torch.ones_like(qz))
+
+        hsic1 = self.hsic(x, z)
+        hsic2 = self.hsic(prior_y, z)
+
+        return gan, mmd, hsic1, hsic2
+
+    def train(self, resume=False):
+        train_main_list = []
+        train_penalty_list = []
+        train_penalty2_list = []
+        train_penalty3_list = []
+        train_penalty4_list = []
+        test_main_list = []
+        test_penalty_list = []
+        test_penalty2_list = []
+        test_penalty3_list = []
+        test_penalty4_list = []
+
+        for net in self.encoder_trainable:
+            net.train()
+        for net in self.decoder_trainable:
+            net.train()
+
+        if self.encoder_pretrain:
+            self.pretrain_encoder()
+            self.log.info("Pretraining Ended!")
+
+        if len(self.tensorboard_dir) > 0:
+            self.writer = SummaryWriter(self.tensorboard_dir)
+
+        optimizer_main = optim.Adam(
+            sum([list(net.parameters()) for net in self.encoder_trainable], [])
+            + sum([list(net.parameters()) for net in self.decoder_trainable], []),
+            lr=self.lr,
+            betas=(self.beta1, 0.999),
+        )
+        optimizer_adv = optim.Adam(
+            sum([list(net.parameters()) for net in self.discriminator_trainable], []),
+            lr=self.lr_adv,
+            betas=(self.beta1_adv, 0.999),
+        )
+
+        start_epoch = 0
+        scheduler_main = self.lr_scheduler(optimizer_main)
+        scheduler_adv = self.lr_scheduler(optimizer_adv)
+
+        if resume:
+            checkpoint = torch.load(self.save_state)
+            start_epoch = checkpoint["epoch"]
+            self.load_state_dict(checkpoint["model_state_dict"])
+            optimizer_main.load_state_dict(checkpoint["optimizer_main_state_dict"])
+            optimizer_adv.load_state_dict(checkpoint["optimizer_adv_state_dict"])
+            if len(self.lr_schedule) > 0:
+                scheduler_main.load_state_dict(checkpoint["scheduler_main"])
+                scheduler_adv.load_state_dict(checkpoint["scheduler_adv"])
+
+        self.train_data = self.data_class(
+            self.data_home, train=True, label=self.labeled, aux=[self.labeled_class, []]
+        )
+        self.train_generator = torch.utils.data.DataLoader(
+            self.train_data,
+            self.batch_size,
+            num_workers=5,
+            shuffle=True,
+            pin_memory=True,
+            drop_last=True,
+        )
+
+        self.test_data = self.data_class(
+            self.data_home, train=False, label=self.labeled, aux=[self.labeled_class, []]
+        )
+        self.test_generator = torch.utils.data.DataLoader(
+            self.test_data,
+            self.batch_size,
+            num_workers=5,
+            shuffle=True,
+            pin_memory=True,
+            drop_last=False,
+        )
+
+        trep = len(self.train_generator)
+        ftrep = len(str(trep))
+        ttep = len(self.test_generator)
+        fttep = len(str(ttep))
+        fep = len(str(self.num_epoch))
+
+        self.log.info("------------------------------------------------------------")
+        self.log.info("Training Start!")
+        start_time = time.time()
+
+        for epoch in range(start_epoch, self.num_epoch):
+            # train_step
+            train_loss_main = inc_avg()
+            train_loss_penalty = inc_avg()
+            train_loss_penalty2 = inc_avg()
+            train_loss_penalty3 = inc_avg()
+            train_loss_penalty4 = inc_avg()
+
+            for i, (data, condition) in enumerate(self.train_generator):
+                # with label
+                n = len(data)
+                prior_z = self.generate_prior(n)
+
+                if self.lamb > 0:
+                    for net in self.discriminator_trainable:
+                        net.zero_grad()
+
+                    x = data.to(self.device)
+                    # y = condition.to(self.device)
+                    fake_latent = self.encode(x)[:, self.y_dim :]
+
+                    adv = self.adv_loss(prior_z, fake_latent)
+                    obj_adv = self.lamb * adv
+                    obj_adv.backward()
+                    optimizer_adv.step()
+
+                for net in self.encoder_trainable:
+                    net.zero_grad()
+                for net in self.decoder_trainable:
+                    net.zero_grad()
+
+                x = data.to(self.device)
+                y = condition.to(self.device)
+                prior_y = self.encode_f1(y)
+
+                fake_latent = self.encode(x)
+                recon = self.decode(fake_latent)
+                loss = self.main_loss(x, recon)
+
+                gan, mmd, hsic1, hsic2 = self.penalty_loss(fake_latent, prior_y, n)
+                obj = (
+                    loss + self.lamb * gan + self.lamb_mmd * mmd + self.lamb_hsic * (hsic1 + hsic2)
+                )
+
+                obj.backward()
+                optimizer_main.step()
+
+                train_loss_main.append(loss.item(), n)
+                if self.lamb > 0:
+                    train_loss_penalty.append(gan.item(), n)
+                    train_loss_penalty2.append(mmd.item(), n)
+                    train_loss_penalty3.append(hsic1.item(), n)
+                    train_loss_penalty4.append(hsic2.item(), n)
+
+                pp = f"[{i+1:0{ftrep}}/{trep}]  loss: {train_loss_main.avg:.4f}  D1: {train_loss_penalty.avg:.4f}  "
+                pp += f"D2: {train_loss_penalty2.avg:.4f}  D3: {train_loss_penalty3.avg:.4f}  "
+                pp += f"D4: {train_loss_penalty4.avg:.4f}"
+                print(pp, end="\r")
+
+            train_main_list.append(train_loss_main.avg)
+            train_penalty_list.append(train_loss_penalty.avg)
+            train_penalty2_list.append(train_loss_penalty2.avg)
+            train_penalty3_list.append(train_loss_penalty3.avg)
+            train_penalty4_list.append(train_loss_penalty4.avg)
+
+            if len(self.tensorboard_dir) > 0:
+                self.writer.add_scalar("train/main", train_loss_main.avg, epoch)
+                self.writer.add_scalar("train/penalty", train_loss_penalty.avg, epoch)
+                if self.cfg["train_info"].getboolean("histogram"):
+                    for param_tensor in self.state_dict():
+                        self.writer.add_histogram(
+                            param_tensor,
+                            self.state_dict()[param_tensor].detach().to("cpu").numpy().flatten(),
+                            epoch,
+                        )
+
+            # validation_step
+            test_loss_main = inc_avg()
+            test_loss_penalty = inc_avg()
+            test_loss_penalty2 = inc_avg()
+            test_loss_penalty3 = inc_avg()
+            test_loss_penalty4 = inc_avg()
+
+            if self.validate_batch:
+                for i, (data, condition) in enumerate(self.test_generator):
+                    n = len(data)
+                    prior_z = self.generate_prior(n)
+                    # test without label
+                    x = data.to(self.device)
+                    y = condition.to(self.device)
+                    prior_y = self.encode_f1(y)
+
+                    fake_latent = self.encode(x)
+                    recon = self.decode(fake_latent)
+                    loss1 = self.main_loss(x, recon)
+                    test_loss_main.append(loss1.item(), n)
+
+                    if self.lamb > 0:
+                        gan, mmd, hsic1, hsic2 = self.penalty_loss(fake_latent, prior_y, n)
+                        test_loss_penalty.append(gan.item(), n)
+                        test_loss_penalty2.append(mmd.item(), n)
+                        test_loss_penalty3.append(hsic1.item(), n)
+                        test_loss_penalty4.append(hsic2.item(), n)
+                    pp = f"[{i+1:0{fttep}}/{ttep}]  test loss: {test_loss_main.avg:.4f}  D: {test_loss_penalty.avg:.4f}  "
+                    pp += f"D2: {test_loss_penalty2.avg:.4f}  D3: {test_loss_penalty3.avg:.4f}  "
+                    pp += f"D4: {test_loss_penalty4.avg:.4f}"
+                    print(pp, end="\r")
+
+                test_main_list.append(test_loss_main.avg)
+                test_penalty_list.append(test_loss_penalty.avg)
+                test_penalty2_list.append(test_loss_penalty2.avg)
+                test_penalty3_list.append(test_loss_penalty3.avg)
+                test_penalty4_list.append(test_loss_penalty4.avg)
+
+                pp = f"[{epoch + 1:0{fep}}/{self.num_epoch}]  loss: {train_loss_main.avg:.6e}  "
+                pp += f"D: {train_loss_penalty.avg:.6e}  D2: {train_loss_penalty2.avg:.6e}  D3: {train_loss_penalty3.avg:.6e}  D4: {train_loss_penalty4.avg:.6e}\ntest loss: {test_loss_main.avg:.6e}  "
+                pp += f"D: {test_loss_penalty.avg:.6e}  D2: {test_loss_penalty2.avg:.6e}  D3: {test_loss_penalty3.avg:.6e}  D4: {test_loss_penalty4.avg:.6e}"
+                self.log.info(pp)
+
+                # Additional test set
+                data, condition = next(iter(self.test_generator))
+
+                n = len(data)
+                prior_z = self.generate_prior(n)
+                x = data.to(self.device)
+                y = condition.to(self.device)
+                prior_y = self.encode_f1(y)
+                fake_latent = self.encode(x)
+                recon = self.decode(fake_latent)
+
+                if len(self.tensorboard_dir) > 0:
+                    self.writer.add_scalar("test/main", test_loss_main.avg, epoch)
+                    self.writer.add_scalar("test/penalty", test_loss_penalty.avg, epoch)
+
+                    if self.lamb > 0:
+                        # Embedding
+                        for_embed1 = fake_latent.detach().to("cpu").numpy()
+                        for_embed2 = torch.cat((prior_y, prior_z), dim=1).detach().to("cpu").numpy()
+                        label = ["fake"] * len(for_embed1) + ["prior"] * len(for_embed2)
+                        self.writer.add_embedding(
+                            np.concatenate((for_embed1, for_embed2)),
+                            metadata=label,
+                            global_step=epoch,
+                        )
+
+                        # Sample Generation
+                        test_dec = (
+                            self.decode(torch.cat((prior_y, prior_z), dim=1))
+                            .detach()
+                            .to("cpu")
+                            .numpy()
+                        )
+                        self.writer.add_images(
+                            "generated_sample", (test_dec[0:32]) * 0.5 + 0.5, epoch
+                        )
+
+                    # Reconstruction
+                    self.writer.add_images(
+                        "reconstruction",
+                        (
+                            np.concatenate(
+                                (
+                                    x.detach().to("cpu").numpy()[0:16],
+                                    recon.detach().to("cpu").numpy()[0:16],
+                                )
+                            )
+                        )
+                        * 0.5
+                        + 0.5,
+                        epoch,
+                    )
+                    self.writer.flush()
+
+                if len(self.save_img_path) > 0:
+                    save_sample_images(
+                        "%s/recon" % self.save_img_path,
+                        epoch,
+                        (
+                            np.concatenate(
+                                (
+                                    x.detach().to("cpu").numpy()[0:32],
+                                    recon.detach().to("cpu").numpy()[0:32],
+                                )
+                            )
+                        )
+                        * 0.5
+                        + 0.5,
+                    )
+                    plt.close()
+                    if self.lamb > 0:
+                        # Sample Generation
+                        test_dec = (
+                            self.decode(torch.cat((prior_y, prior_z), dim=1))
+                            .detach()
+                            .to("cpu")
+                            .numpy()
+                        )
+                        save_sample_images(
+                            "%s/gen" % self.save_img_path, epoch, (test_dec[0:64]) * 0.5 + 0.5
+                        )
+                        plt.close()
+
+                if self.save_best:
+                    obj = test_loss_main.avg + self.lamb * test_loss_penalty.avg
+                    if self.best_obj[1] > obj:
+                        self.best_obj[0] = epoch + 1
+                        self.best_obj[1] = obj
+                        self.save(self.save_path)
+                        self.log.info("model saved, obj: %.6e" % obj)
+                else:
+                    self.save(self.save_path)
+                    # self.log.info("model saved at: %s" % self.save_path)
+
+            scheduler_main.step()
+            if self.lamb > 0:
+                scheduler_adv.step()
+
+            if len(self.save_state) > 0:
+                save_dict = {
+                    "epoch": epoch + 1,
+                    "model_state_dict": self.state_dict(),
+                    "optimizer_main_state_dict": optimizer_main.state_dict(),
+                    "optimizer_adv_state_dict": optimizer_adv.state_dict(),
+                }
+                if len(self.lr_schedule) > 0:
+                    save_dict["scheduler_main"] = scheduler_main.state_dict()
+                    save_dict["scheduler_adv"] = scheduler_adv.state_dict()
+                torch.save(save_dict, self.save_state)
+
+        if not self.validate_batch:
+            self.save(self.save_path)
+
+        self.log.info("Training Finished!")
+        self.log.info("Elapsed time: %.3fs" % (time.time() - start_time))
+
+        if len(self.tensorboard_dir) > 0:
+            self.writer.close()
+
+        self.hist = np.array(
+            [
+                train_main_list,
+                train_penalty_list,
+                train_penalty2_list,
+                train_penalty3_list,
+                train_penalty4_list,
+                test_main_list,
+                test_penalty_list,
+                test_penalty2_list,
+                test_penalty3_list,
+                test_penalty4_list,
+            ]
+        )
+
+
+class SSWAE_HSIC_dev2_4(SSWAE_HSIC_dev2_3):
+    def __init__(self, cfg, log, device="cpu", verbose=1):
+        super(SSWAE_HSIC_dev2_4, self).__init__(cfg, log, device, verbose)
+
+    def penalty_loss(self, q, prior_y, y, n):
+        x = q[:, 0 : self.y_dim]
+
+        mmd = (self.k(x, x, False) + self.k(prior_y, prior_y, False)) / (n * (n - 1)) - 2 * self.k(
+            x, prior_y, True
+        ) / (n * n)
+
+        z = q[:, self.y_dim :]
+        qz = self.discriminate(z)
+        gan = self.disc_loss(qz, torch.ones_like(qz))
+
+        hsic1 = self.hsic(x, z)
+        hsic2 = self.hsic(y, z)
+
+        return gan, mmd, hsic1, hsic2
+
+    def train(self, resume=False):
+        train_main_list = []
+        train_penalty_list = []
+        train_penalty2_list = []
+        train_penalty3_list = []
+        train_penalty4_list = []
+        test_main_list = []
+        test_penalty_list = []
+        test_penalty2_list = []
+        test_penalty3_list = []
+        test_penalty4_list = []
+
+        for net in self.encoder_trainable:
+            net.train()
+        for net in self.decoder_trainable:
+            net.train()
+
+        if self.encoder_pretrain:
+            self.pretrain_encoder()
+            self.log.info("Pretraining Ended!")
+
+        if len(self.tensorboard_dir) > 0:
+            self.writer = SummaryWriter(self.tensorboard_dir)
+
+        optimizer_main = optim.Adam(
+            sum([list(net.parameters()) for net in self.encoder_trainable], [])
+            + sum([list(net.parameters()) for net in self.decoder_trainable], []),
+            lr=self.lr,
+            betas=(self.beta1, 0.999),
+        )
+        optimizer_adv = optim.Adam(
+            sum([list(net.parameters()) for net in self.discriminator_trainable], []),
+            lr=self.lr_adv,
+            betas=(self.beta1_adv, 0.999),
+        )
+
+        start_epoch = 0
+        scheduler_main = self.lr_scheduler(optimizer_main)
+        scheduler_adv = self.lr_scheduler(optimizer_adv)
+
+        if resume:
+            checkpoint = torch.load(self.save_state)
+            start_epoch = checkpoint["epoch"]
+            self.load_state_dict(checkpoint["model_state_dict"])
+            optimizer_main.load_state_dict(checkpoint["optimizer_main_state_dict"])
+            optimizer_adv.load_state_dict(checkpoint["optimizer_adv_state_dict"])
+            if len(self.lr_schedule) > 0:
+                scheduler_main.load_state_dict(checkpoint["scheduler_main"])
+                scheduler_adv.load_state_dict(checkpoint["scheduler_adv"])
+
+        self.train_data = self.data_class(
+            self.data_home, train=True, label=self.labeled, aux=[self.labeled_class, []]
+        )
+        self.train_generator = torch.utils.data.DataLoader(
+            self.train_data,
+            self.batch_size,
+            num_workers=5,
+            shuffle=True,
+            pin_memory=True,
+            drop_last=True,
+        )
+
+        self.test_data = self.data_class(
+            self.data_home, train=False, label=self.labeled, aux=[self.labeled_class, []]
+        )
+        self.test_generator = torch.utils.data.DataLoader(
+            self.test_data,
+            self.batch_size,
+            num_workers=5,
+            shuffle=True,
+            pin_memory=True,
+            drop_last=False,
+        )
+
+        trep = len(self.train_generator)
+        ftrep = len(str(trep))
+        ttep = len(self.test_generator)
+        fttep = len(str(ttep))
+        fep = len(str(self.num_epoch))
+
+        self.log.info("------------------------------------------------------------")
+        self.log.info("Training Start!")
+        start_time = time.time()
+
+        for epoch in range(start_epoch, self.num_epoch):
+            # train_step
+            train_loss_main = inc_avg()
+            train_loss_penalty = inc_avg()
+            train_loss_penalty2 = inc_avg()
+            train_loss_penalty3 = inc_avg()
+            train_loss_penalty4 = inc_avg()
+
+            for i, (data, condition) in enumerate(self.train_generator):
+                # with label
+                n = len(data)
+                prior_z = self.generate_prior(n)
+
+                if self.lamb > 0:
+                    for net in self.discriminator_trainable:
+                        net.zero_grad()
+
+                    x = data.to(self.device)
+                    # y = condition.to(self.device)
+                    fake_latent = self.encode(x)[:, self.y_dim :]
+
+                    adv = self.adv_loss(prior_z, fake_latent)
+                    obj_adv = self.lamb * adv
+                    obj_adv.backward()
+                    optimizer_adv.step()
+
+                for net in self.encoder_trainable:
+                    net.zero_grad()
+                for net in self.decoder_trainable:
+                    net.zero_grad()
+
+                x = data.to(self.device)
+                y = condition.to(self.device)
+                prior_y = self.encode_f1(y)
+
+                fake_latent = self.encode(x)
+                recon = self.decode(fake_latent)
+                loss = self.main_loss(x, recon)
+
+                gan, mmd, hsic1, hsic2 = self.penalty_loss(fake_latent, prior_y, y, n)
+                obj = (
+                    loss + self.lamb * gan + self.lamb_mmd * mmd + self.lamb_hsic * (hsic1 + hsic2)
+                )
+
+                obj.backward()
+                optimizer_main.step()
+
+                train_loss_main.append(loss.item(), n)
+                if self.lamb > 0:
+                    train_loss_penalty.append(gan.item(), n)
+                    train_loss_penalty2.append(mmd.item(), n)
+                    train_loss_penalty3.append(hsic1.item(), n)
+                    train_loss_penalty4.append(hsic2.item(), n)
+
+                pp = f"[{i+1:0{ftrep}}/{trep}] train loss: {train_loss_main.avg:.4f}  D1: {train_loss_penalty.avg:.4f}  "
+                pp += f"D2: {train_loss_penalty2.avg:.4f}  D3: {train_loss_penalty3.avg:.4f}  "
+                pp += f"D4: {train_loss_penalty4.avg:.4f}"
+                print(pp, end="\r")
+
+            train_main_list.append(train_loss_main.avg)
+            train_penalty_list.append(train_loss_penalty.avg)
+            train_penalty2_list.append(train_loss_penalty2.avg)
+            train_penalty3_list.append(train_loss_penalty3.avg)
+            train_penalty4_list.append(train_loss_penalty4.avg)
+
+            if len(self.tensorboard_dir) > 0:
+                self.writer.add_scalar("train/main", train_loss_main.avg, epoch)
+                self.writer.add_scalar("train/penalty", train_loss_penalty.avg, epoch)
+                if self.cfg["train_info"].getboolean("histogram"):
+                    for param_tensor in self.state_dict():
+                        self.writer.add_histogram(
+                            param_tensor,
+                            self.state_dict()[param_tensor].detach().to("cpu").numpy().flatten(),
+                            epoch,
+                        )
+
+            # validation_step
+            test_loss_main = inc_avg()
+            test_loss_penalty = inc_avg()
+            test_loss_penalty2 = inc_avg()
+            test_loss_penalty3 = inc_avg()
+            test_loss_penalty4 = inc_avg()
+
+            if self.validate_batch:
+                for i, (data, condition) in enumerate(self.test_generator):
+                    n = len(data)
+                    prior_z = self.generate_prior(n)
+                    # test without label
+                    x = data.to(self.device)
+                    y = condition.to(self.device)
+                    prior_y = self.encode_f1(y)
+
+                    fake_latent = self.encode(x)
+                    recon = self.decode(fake_latent)
+                    loss1 = self.main_loss(x, recon)
+                    test_loss_main.append(loss1.item(), n)
+
+                    if self.lamb > 0:
+                        gan, mmd, hsic1, hsic2 = self.penalty_loss(fake_latent, prior_y, y, n)
+                        test_loss_penalty.append(gan.item(), n)
+                        test_loss_penalty2.append(mmd.item(), n)
+                        test_loss_penalty3.append(hsic1.item(), n)
+                        test_loss_penalty4.append(hsic2.item(), n)
+                    pp = f"[{i+1:0{fttep}}/{ttep}]  test loss: {test_loss_main.avg:.4f}  D: {test_loss_penalty.avg:.4f}  "
+                    pp += f"D2: {test_loss_penalty2.avg:.4f}  D3: {test_loss_penalty3.avg:.4f}  "
+                    pp += f"D4: {test_loss_penalty4.avg:.4f}"
+                    print(pp, end="\r")
+
+                test_main_list.append(test_loss_main.avg)
+                test_penalty_list.append(test_loss_penalty.avg)
+                test_penalty2_list.append(test_loss_penalty2.avg)
+                test_penalty3_list.append(test_loss_penalty3.avg)
+                test_penalty4_list.append(test_loss_penalty4.avg)
+
+                pp = f"[{epoch + 1:0{fep}}/{self.num_epoch}]  loss: {train_loss_main.avg:.6e}  "
+                pp += f"D: {train_loss_penalty.avg:.6e}  D2: {train_loss_penalty2.avg:.6e}  D3: {train_loss_penalty3.avg:.6e}  D4: {train_loss_penalty4.avg:.6e}\ntest loss: {test_loss_main.avg:.6e}  "
+                pp += f"D: {test_loss_penalty.avg:.6e}  D2: {test_loss_penalty2.avg:.6e}  D3: {test_loss_penalty3.avg:.6e}  D4: {test_loss_penalty4.avg:.6e}"
+                self.log.info(pp)
+
+                # Additional test set
+                data, condition = next(iter(self.test_generator))
+
+                n = len(data)
+                prior_z = self.generate_prior(n)
+                x = data.to(self.device)
+                y = condition.to(self.device)
+                prior_y = self.encode_f1(y)
+                fake_latent = self.encode(x)
+                recon = self.decode(fake_latent)
+
+                if len(self.tensorboard_dir) > 0:
+                    self.writer.add_scalar("test/main", test_loss_main.avg, epoch)
+                    self.writer.add_scalar("test/penalty", test_loss_penalty.avg, epoch)
+
+                    if self.lamb > 0:
+                        # Embedding
+                        for_embed1 = fake_latent.detach().to("cpu").numpy()
+                        for_embed2 = torch.cat((prior_y, prior_z), dim=1).detach().to("cpu").numpy()
+                        label = ["fake"] * len(for_embed1) + ["prior"] * len(for_embed2)
+                        self.writer.add_embedding(
+                            np.concatenate((for_embed1, for_embed2)),
+                            metadata=label,
+                            global_step=epoch,
+                        )
+
+                        # Sample Generation
+                        test_dec = (
+                            self.decode(torch.cat((prior_y, prior_z), dim=1))
+                            .detach()
+                            .to("cpu")
+                            .numpy()
+                        )
+                        self.writer.add_images(
+                            "generated_sample", (test_dec[0:32]) * 0.5 + 0.5, epoch
+                        )
+
+                    # Reconstruction
+                    self.writer.add_images(
+                        "reconstruction",
+                        (
+                            np.concatenate(
+                                (
+                                    x.detach().to("cpu").numpy()[0:16],
+                                    recon.detach().to("cpu").numpy()[0:16],
+                                )
+                            )
+                        )
+                        * 0.5
+                        + 0.5,
+                        epoch,
+                    )
+                    self.writer.flush()
+
+                if len(self.save_img_path) > 0:
+                    save_sample_images(
+                        "%s/recon" % self.save_img_path,
+                        epoch,
+                        (
+                            np.concatenate(
+                                (
+                                    x.detach().to("cpu").numpy()[0:32],
+                                    recon.detach().to("cpu").numpy()[0:32],
+                                )
+                            )
+                        )
+                        * 0.5
+                        + 0.5,
+                    )
+                    plt.close()
+                    if self.lamb > 0:
+                        # Sample Generation
+                        test_dec = (
+                            self.decode(torch.cat((prior_y, prior_z), dim=1))
+                            .detach()
+                            .to("cpu")
+                            .numpy()
+                        )
+                        save_sample_images(
+                            "%s/gen" % self.save_img_path, epoch, (test_dec[0:64]) * 0.5 + 0.5
+                        )
+                        plt.close()
+
+                if self.save_best:
+                    obj = test_loss_main.avg + self.lamb * test_loss_penalty.avg
+                    if self.best_obj[1] > obj:
+                        self.best_obj[0] = epoch + 1
+                        self.best_obj[1] = obj
+                        self.save(self.save_path)
+                        self.log.info("model saved, obj: %.6e" % obj)
+                else:
+                    self.save(self.save_path)
+                    # self.log.info("model saved at: %s" % self.save_path)
+
+            scheduler_main.step()
+            if self.lamb > 0:
+                scheduler_adv.step()
+
+            if len(self.save_state) > 0:
+                save_dict = {
+                    "epoch": epoch + 1,
+                    "model_state_dict": self.state_dict(),
+                    "optimizer_main_state_dict": optimizer_main.state_dict(),
+                    "optimizer_adv_state_dict": optimizer_adv.state_dict(),
+                }
+                if len(self.lr_schedule) > 0:
+                    save_dict["scheduler_main"] = scheduler_main.state_dict()
+                    save_dict["scheduler_adv"] = scheduler_adv.state_dict()
+                torch.save(save_dict, self.save_state)
+
+        if not self.validate_batch:
+            self.save(self.save_path)
+
+        self.log.info("Training Finished!")
+        self.log.info("Elapsed time: %.3fs" % (time.time() - start_time))
+
+        if len(self.tensorboard_dir) > 0:
+            self.writer.close()
+
+        self.hist = np.array(
+            [
+                train_main_list,
+                train_penalty_list,
+                train_penalty2_list,
+                train_penalty3_list,
+                train_penalty4_list,
+                test_main_list,
+                test_penalty_list,
+                test_penalty2_list,
+                test_penalty3_list,
+                test_penalty4_list,
+            ]
+        )
+
+
 class SSWAE_HSIC_dev3(SSWAE_HSIC_dev2):
     def __init__(self, cfg, log, device="cpu", verbose=1):
         super(SSWAE_HSIC_dev3, self).__init__(cfg, log, device, verbose)
